@@ -1,3 +1,5 @@
+use crate::OwnerType::Friendly;
+use crate::SiteType::{Barracks, Mine, Tower};
 use std::collections::{HashMap, HashSet};
 use std::io;
 macro_rules! parse_input {
@@ -5,6 +7,11 @@ macro_rules! parse_input {
         $x.trim().parse::<$t>().unwrap()
     };
 }
+
+const QUEEN_GUARD_HEALTH: i32 = 24;
+
+const COUNT_BARRACKS: usize = 0;
+const GOLD_INC: i32 = 2;
 
 #[derive(Debug)]
 struct P(i32, i32);
@@ -41,7 +48,7 @@ impl SiteOptions {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum OwnerType {
+pub enum OwnerType {
     None = -1,
     Friendly = 0,
     Enemy = 1,
@@ -58,7 +65,7 @@ impl OwnerType {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum SiteType {
+pub enum SiteType {
     None = -1,
     Mine = 0,
     Barracks = 2,
@@ -102,6 +109,21 @@ impl CommonSite {
         self.s_type = SiteType::from(s_type);
         self.options = Option::from(options);
     }
+    pub fn is_barracks(&self) -> bool {
+        return self.s_type == Barracks;
+    }
+    pub fn is_tower(&self) -> bool {
+        return self.s_type == Tower;
+    }
+    pub fn is_mine(&self) -> bool {
+        return self.s_type == Mine;
+    }
+    pub fn is_own(&self) -> bool {
+        return self.s_owner == OwnerType::Friendly;
+    }
+    pub fn is(&self, s: SiteType, owner: OwnerType) -> bool {
+        return self.s_type == s && self.s_owner == owner;
+    }
 }
 
 #[derive(Debug)]
@@ -140,47 +162,84 @@ impl ResourceManager {
         return self
             .sites
             .values()
-            .filter(|&x| x.s_type == SiteType::Mine && x.s_owner == OwnerType::Friendly)
-            .map(|x| match &x.options {
-                Some(opt) => &opt.gold_remaining,
-                None => &0,
-            })
-            .sum();
+            .filter(|&x| x.is(Mine, OwnerType::Friendly))
+            .count() as i32;
     }
 
     pub fn near_site(&self) -> Option<&CommonSite> {
         let t = self.queen.as_ref().unwrap();
 
-        self.sites.values().min_by(|&x, &y| {
-            let xp = x.p.near(&t.p);
-            let yp = y.p.near(&t.p);
-            return xp.cmp(&yp);
-        })
+        self.sites
+            .values()
+            .filter(|&x| x.is(SiteType::None, OwnerType::None))
+            .min_by(|&x, &y| {
+                let xp = x.p.near(&t.p);
+                let yp = y.p.near(&t.p);
+                return xp.cmp(&yp);
+            })
     }
+
+    // select building type from necessaries
     pub fn site_predict(&mut self) -> SiteType {
-        let inc = self.gold_inc();
+        // если притока золота хватит на еще то строим барак
+        // иначе строим шахты f
         let barracks = self
             .sites
             .values()
-            .filter(|&x| x.s_type == SiteType::Barracks && x.s_owner == OwnerType::Friendly)
-            .count();
+            .filter(|&x| x.is(Barracks, Friendly))
+            .collect::<Vec<_>>()
+            .len();
 
-        if gold > (barracks * 40) as i32 {
-            return SiteType::Barracks;
+        let gold_inc = self.gold_inc();
+
+        eprintln!("GOLD INC {gold_inc}");
+        if gold_inc < GOLD_INC {
+            return SiteType::Mine;
         }
-        return SiteType::Mine;
+        if barracks > COUNT_BARRACKS {
+            return SiteType::Tower;
+        }
+        return SiteType::Barracks;
     }
     pub fn process_build(&mut self) {
+        eprintln!("process_build");
         let st = self.site_predict();
         let near = self.near_site();
         match near {
             Some(t) => {
-                built(t.site_id, st);
+                println!("{}", built(t.site_id, st));
             }
-            None => {}
+            None => {
+                println!("WAIT");
+            }
         }
     }
+    pub fn queen_guard(&mut self) -> bool {
+        eprintln!("queen_guard");
+        let t = self.queen.as_ref().unwrap();
+
+        if t.health < QUEEN_GUARD_HEALTH {
+            let nearTower = self
+                .sites
+                .values()
+                .filter(|&x| x.is(Tower, Friendly))
+                .max_by(|&x, &y| {
+                    let xp = x.p.near(&t.p);
+                    let yp = y.p.near(&t.p);
+                    return xp.cmp(&yp);
+                });
+            return match nearTower {
+                Some(t) => {
+                    println!("MOVE {} {}", t.p.x(), t.p.y());
+                    return true;
+                }
+                _ => false,
+            };
+        }
+        return false;
+    }
     pub fn process_train(&mut self) {
+        eprintln!("process_train");
         let gl = self.gold.as_ref() / 80;
 
         if gl == 0 {
@@ -190,20 +249,31 @@ impl ResourceManager {
         let barracks = self
             .sites
             .values()
-            .filter(|&x| x.s_type == SiteType::Barracks && x.s_owner == OwnerType::Friendly)
+            .filter(|&x| x.is(Barracks, Friendly))
             .take(gl as usize)
             .map(|x| x.site_id.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
+            .collect::<Vec<_>>();
 
-        println!("TRAIN {}", barracks);
-    }
-    pub fn process_predict(&mut self) {}
-    pub fn process(&mut self, tc: i32) {
-        match tc {
-            -1 => self.process_predict(),
-            _ => self.process_build(),
+        eprintln!("{}", barracks.len());
+        if barracks.len() > 0 {
+            println!("TRAIN {}", barracks.join(" "));
+            return;
         }
+        println!("TRAIN");
+    }
+    // move or build
+    pub fn process_predict(&mut self) {
+        self.process_build();
+    }
+    pub fn process(&mut self, tc: i32) {
+        eprintln!("tc:{tc}");
+        if !self.queen_guard() {
+            match tc {
+                -1 => self.process_predict(),
+                _ => self.process_build(),
+            }
+        }
+
         self.process_train();
     }
 }
